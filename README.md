@@ -1,7 +1,7 @@
 engine-blogs
 ============
 
-深度技术博客系列：大二实现两个存储引擎（Bitcask / B+Tree+LSM）的完整复盘。
+深度技术博客系列：实现两个存储引擎（Bitcask / B+Tree+LSM）的完整复盘。
 
 - 01_bitcask_deep_dive.md — append-only、Hint 文件与 Compaction 的设计取舍
 - 02_btree_vs_lsm.md — 同一套缓冲池上的两个引擎对比（真实实验数据）
