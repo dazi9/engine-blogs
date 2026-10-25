@@ -11,8 +11,8 @@ pybitcask 的 fuzzer（fuzz/model_fuzz.py）是模型测试：内存里维护一
 比 oracle 更重要的是**契约**。每个 profile 开头用注释写明"这个故障注入之后，什么性质必须成立"（model_fuzz.py:4-22）：
 
 - **ops**：随机 op 序列（put/delete/get/scan/batch/compact/reopen），每步对账；
-- **torn**：干净关闭 → 把 active 段尾部截掉 1~512 字节 → 重开。契约：要么启动失败且报错干净，要么成功且截断前的每个 key 都可读；
-- **corrupt**：干净关闭 → 随机段文件里翻转 1~3 个 bit → 重开。契约：**绝不返回错的数据**——要么报错，要么返回对的值；
+- **torn**：干净关闭 → 把 active 段尾部截掉 1–512 字节 → 重开。契约：要么启动失败且报错干净，要么成功且截断前的每个 key 都可读；
+- **corrupt**：干净关闭 → 随机段文件里翻转 1–3 个 bit → 重开。契约：**绝不返回错的数据**——要么报错，要么返回对的值；
 - **kill**：子进程写两个会话，第二个会话中途 `os._exit(1)` 硬崩（kill_writer.py:70）。契约：已刷进 OS 页缓存的写入，除最后 2 条外必须全部存活；
 - **ttl**：任何公开 API 都不许把过期 key 当活的，重开和 compaction 之后也一样。
 
@@ -39,7 +39,7 @@ C++ 引擎这边 8 个 bug，我按它们断裂的那条缝分成四组。
 
 ### 3.1 缝一："盘上到底是什么状态"——两个最深的问题
 
-**Bug 1：WAL lsn 跨会话归零。** WALManager 的计数器成员默认值是 `next_lsn_{1}`（wal.hpp:77）——每个新会话从 1 重新计数，没人觉得这有问题，直到 meta 页开始持久化上一会话的 checkpoint 水位。场景：会话 A 写 100 条、checkpoint（水位 ~100+）、正常关闭；会话 B 重开、写 50 条、硬崩。会话 B 的 lsn 是 1~50，全部小于水位，恢复时被 `if (rec.lsn <= checkpoint_lsn_) continue;`（btree.cpp:157）**整段跳过**——崩溃前明明落了 WAL 的 50 条写入静默蒸发。这个 bug 的可怕在于它需要"跨会话"才触发，单会话内的所有测试永远碰不到它。修复一行：打开引擎时播种 `checkpoint_lsn_ + 1`（btree.cpp:132-136）。回归测试用三个会话钉住它：A 写 100 条 checkpoint，B 写 50 条硬崩，C 恢复后断言 150 条全在且值按会话区分（tests/test_main.cpp:264-310，`test_wal_lsn_continuity_across_sessions`）。
+**Bug 1：WAL lsn 跨会话归零。** WALManager 的计数器成员默认值是 `next_lsn_{1}`（wal.hpp:77）——每个新会话从 1 重新计数，没人觉得这有问题，直到 meta 页开始持久化上一会话的 checkpoint 水位。场景：会话 A 写 100 条、checkpoint（水位 约100+）、正常关闭；会话 B 重开、写 50 条、硬崩。会话 B 的 lsn 是 1–50，全部小于水位，恢复时被 `if (rec.lsn <= checkpoint_lsn_) continue;`（btree.cpp:157）**整段跳过**——崩溃前明明落了 WAL 的 50 条写入静默蒸发。这个 bug 的可怕在于它需要"跨会话"才触发，单会话内的所有测试永远碰不到它。修复一行：打开引擎时播种 `checkpoint_lsn_ + 1`（btree.cpp:132-136）。回归测试用三个会话钉住它：A 写 100 条 checkpoint，B 写 50 条硬崩，C 恢复后断言 150 条全在且值按会话区分（tests/test_main.cpp:264-310，`test_wal_lsn_continuity_across_sessions`）。
 
 **Bug 2：steal/no-steal 策略错配。** 这是我复盘时最想重做的一条，第二篇里详细写过，这里只补 fuzzer 视角。症状：kill/torn 类崩溃注入后恢复，get 丢几十个 key，put 报 `Could not locate leaf page`（btree.cpp:295）。根因：缓冲池逐出脏页时单独刷盘（buffer_pool.cpp:271-274），崩溃后盘上各页处于不同 lsn 的混合状态，而恢复协议假设"盘上 = 完整检查点镜像"，只回放增量——假设被 steal 悄悄破坏了。修复是三件套：no-steal（脏帧拒绝逐出并上报耗尽，buffer_pool.cpp:262-270）+ 脏帧压力主动 checkpoint（btree.cpp:482-490）+ 耗尽后重试（btree.cpp:380-386）。回归测试把缓冲池压到 **6 帧**（tests/test_main.cpp:341-377，`test_btree_dirty_pressure_small_pool`）——6 帧 << 树的页数，强制一整场会话里反复触发压力检查点，然后硬崩、恢复、逐 key 断言。
 

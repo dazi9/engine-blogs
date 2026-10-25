@@ -63,7 +63,7 @@ Monkey 回答的问题是：LSM 的点查在每一层都要过一个布隆过滤
 
 布隆本体是 Kirsch-Mitzenmacher 双哈希：g_i(x) = h₁(x) + i·h₂(x)（bloom.hpp:13-17），h₁ 用 MurmurHash3、h₂ 用 FNV-1a，h₂ 强制置奇数位避免步长周期（bloom.cpp:27），探针数 k = clamp(floor(bpk × ln 2), 1, 30)（bloom.cpp:10-13）——记住这个 floor，第五节要跟它算账。
 
-## 五、exp3：同一份预算，浪费的磁盘读少 23%~39%
+## 五、exp3：同一份预算，浪费的磁盘读少 23%约39%
 
 实验设计（bench_experiments.cpp:260-346）：在同一棵 LSM 上人工搭出 1:4:16 的三层——L2 塞 2400 个 key、L1 塞 600 个、L0 塞 150 个，三层的 key 跨度故意重叠在同一域里（bench_experiments.cpp:275-305）；然后发 5000 个**意图上不存在、且刻意落在所有层 [min_key, max_key] 之内**的查询（bench_experiments.cpp:317-323，注释原话是 guaranteed absent）——上一篇文章里我说过 exp1 的 missing-key 查询测不到布隆，这里就是修正版：设计意图是让每个查询把三层布隆全部过一遍。（"意图上"三个字是写这篇文章重新验算时加的——这个生成器其实并不严格保证不存在，第六节细说。）预算从 4 到 10 bits/key，两种模式用 `retune_bloom_filters` 在**同一棵树**上热切换（lsm.cpp:356-361），配 `reset_read_stats`（lsm.hpp:137-143）保证两组数字出自同一个引擎状态。
 
